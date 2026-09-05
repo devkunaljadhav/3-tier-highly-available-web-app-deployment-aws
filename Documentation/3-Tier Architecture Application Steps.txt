@@ -1,0 +1,325 @@
+3-Tier Architecture Application Deployment
+===========================================
+
+1 Create own VPC - 192.168.0.0/16
+2.Create Security Groups - 5
+3.Create S3 Private Bucket for store our code 
+4.Create IAM ROLE - TE = EC2, Permissions = SSM or Admin or Create EC2 VPC Endpoint
+5.Create RDS MySQL 
+6.Create App Server and setup application 
+7.Create Internal Load Balancer for App Servers
+8.Create Web Server and setup nginx
+9.Create External Load Balancer for Web Servers
+10.Setup ASG for Web Servers
+11.Setup ASG for App Servers
+12.Setup HTTPS - ACM 
+13.Setup Route53 - makeup https://boom.reyazawstrainer.com
+
+
+
+
+1. Create a VPC 
+   VPC and more
+   Auto-Generate = 3-tier-project
+   CIDR =  192.168.0.0/16
+   Tenancy = Default
+   AZ = 2
+   2 Public Subnets
+   4 Private Subnets
+   1 NAT - Zonal - In 1 AZ
+   VPC Endpoint - None
+
+--> Create Security Groups = (1 Web ALB(external), 1 WebServer, 1 App Internal ALB, 1 App Server, 1DB)
+
+    Create WebALB-SG - Inbound http, https ,  Anywhere 0.0.0.0/0 
+
+    Create Web-SG - Inbound http, https , custom = Allow from WebALB-SG or 192.168.0.0/16
+
+    Create AppALB-SG - Inbound http, https , custom = Allow from Web-SG or 192.168.0.0/16
+
+    Create App-SG - Inbound custom TCP Port 4000 ,  custom = Allow from AppALB-SG or 192.168.0.0/16  [Nodejs app using 4000]
+
+    Create Database-SG - Inbound MySQL, Custom  = Allow from App-SG or 192.168.0.0/16. we are giving access to entire vpc traffic
+    
+
+2. Create a S3 Private Bucket (3-tier-project-demo) and upload the Code including application-code folder and install.sh
+
+   2 Places need code modification  
+   1 - App-Tier - DbConfig.js - Update RDS Creds
+   2 - Web-Tier - nginx.conf - Update Internal Load Balancer DNSName
+
+3. Create a IAM ROLE and later we attach to the EC2 instance
+
+   TO connect to Private App Server, we need Bastion/Jump. Instead we use SSM to connect directly from internet for that we create ROLE
+   TE = EC2
+   Permissions = AmazonEC2RoleforSSM / Admin
+   Name = 3-tier-role
+
+--> Go to VPC --> Subnets --> Change Private1 , Private2 , Private3, Private4 as APP1, APP2, DB1, DB2 as per Architecture
+
+4. Create RDS instance - MySQL
+
+   --> As we created a new VPC, we need to create a DB under this VPC. But this new VPC doesn't have any DB Subnet Group for Subnets.
+   Create Subnet Group first
+   Name = tier-Subnet-Group
+   Description = tier-Subnet-Group
+   VPC = 3-tier-project-vpc
+   AZ = 1a and 1b
+   Subnets = DB1 and DB2
+
+  Create RDS DB instance - MySQL
+  DB identifier = my3tierdb
+  VPC = 3-tier-vpc-project
+  SG = Database-SG
+  DB Subnet Group = tier-Subnet-Group
+  Public Access = NO
+  Security Group = Database-SG
+  Sample DB = NO
+  Backups = NO [will create fastly]
+  Encryption = yes
+
+Endpoint = my3tierdb.cdbmlufgqkjd.ap-south-1.rds.amazonaws.com
+Username = admin
+Password = root123456
+
+Update credentials in App-Tier folder -  DbConfig.js
+
+--> upload this back to S3 bucket
+
+5. Create Application Tier Resources(App-Server) Including Internal Load Balancer
+
+--> Launch Amazon Linux 2023 - App-Server
+    Instance Type = t3.micro
+    VPC = 3-tier-vpc-project
+    Subnet = APP1
+    Public IP = Disable
+    Security Group = App-SG
+    Instance Profile = 3-tier-role
+
+--> TO connect to App Server which is in Private Subnet, we need Bastion/Jump Server. Instead now, we use SSM to connect directly to App Server or use VPC EC2 Endpoints
+
+--> Connect to this instance using Session Manager and setup Nodejs Application
+
+    sudo -s
+    cd /home/ec2-user
+
+    install MySQL Client
+     ----------------------
+
+    sudo dnf install -y mariadb105
+
+    Connect to the RDS database and create databases
+    --------------------------------------------------------
+    mysql -h my3tierdb.cdbmlufgqkjd.ap-south-1.rds.amazonaws.com -u admin -p
+    pwd: root123456
+    
+CREATE DATABASE webappdb;
+SHOW DATABASES;
+USE webappdb;
+
+CREATE TABLE IF NOT EXISTS transactions(
+  id INT NOT NULL AUTO_INCREMENT, 
+  amount DECIMAL(10,2), 
+  description VARCHAR(100), 
+  PRIMARY KEY(id)
+);
+
+SHOW TABLES;
+INSERT INTO transactions (amount, description) VALUES ('400', 'awsbill');
+SELECT * FROM transactions;
+
+exit
+
+Install and Configure Node.js and PM2 [PM - process manager]
+----------------------------------------------------------
+# Official NVM Installation:
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+
+source ~/.bashrc
+
+nvm install 16    [node version manager nvm - or 'nvm install 18']
+
+nvm use 16
+
+npm install -g pm2   [run this node as a service otherwise it will work as interactive mode]
+
+npm install mysql2 [installing mysql2 using npm to support our application]
+
+Download application code from S3 and start the application:
+---------------------------------------------------------
+
+aws s3 cp s3://3-tier-project-demo-6pm/application-code/app-tier/ app-tier --recursive
+
+cd app-tier
+
+npm install  [it will install all missing packages]
+pm2 start index.js
+pm2 status
+pm2 list
+pm2 logs
+pm2 startup   [to make it startup after reboot]
+
+curl http://localhost:4000/health   [This should respond with "This is the health check"]
+
+Create now internal load balancer and target group
+--------------------------------------------------
+
+Create target group
+Target Type = Instance
+Target Group Name = App-TG
+Protocol = http, port = 4000
+VPC = 3-tier-vpc-project
+Health Check = /health  [curl http://localhost:4000/health as application is using /health for health check]
+Select App-Server
+Create Target Group
+
+Now Create ALB
+Name = app-internal-alb
+Scheme = Internal
+VPC = 3-tier-vpc-project
+AZ = 1a = APP1
+AZ = 1b = APP2
+Security Group = AppALB-SG
+Protocol http = 80 = Select target group = App-TG
+
+After Internal ALB is created , update nginx.conf in application-code
+
+        location /api/ {
+            proxy_pass http://internal-app-internal-alb-432718895.ap-south-1.elb.amazonaws.com:80/;
+        }
+
+Upload it back to S3 .
+
+
+6. Create Web-Tier Resources including External Load Balancer
+
+Web Tier Installation. Install Node.js and Nginx on the web tier:
+-----------------------------------------------------------------
+
+Launch Amazon Linux 2023 Instance
+Name = Web-Server
+VPC = 3-tier-vpc-project
+Subnet = public1
+Auto Public IP = Enable
+Security Group = Web-SG
+Instance role = 3-tier-role
+
+Connect to this instance with session manager 
+
+sudo -s
+cd /home/ec2-user
+
+# Official NVM Installation:
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+source ~/.bashrc
+nvm install 16    [or 'nvm install 18']
+nvm use 16
+
+aws s3 cp s3://3-tier-project-demo-kunal1/application-code/web-tier/ web-tier --recursive
+
+cd ~/web-tier
+npm install
+npm run build  [if you get build error, run the below command. this is due to some version mismatch]
+
+npm install eslint-plugin-jest@27 --save-dev
+
+
+sudo dnf install -y nginx
+
+Update Nginx configuration:
+--------------------------
+
+cd /etc/nginx
+
+ls
+
+sudo rm nginx.conf   [Remove the default file and download our nginx.conf from S3 where it has our own configuration]
+
+sudo aws s3 cp s3://3-tier-project-demo-kunal1/application-code/nginx.conf .
+
+sudo systemctl restart nginx
+
+chmod -R 755 /home/ec2-user
+
+sudo chkconfig nginx on
+
+
+7. Create a External Load Balancer with TargetGroup
+
+Create Target Group
+
+Create target group
+Target Type = Instance
+Target Group Name = Web-TG
+Protocol = http, port = 80
+VPC = 3-tier-vpc-project
+Health Check = /
+Select Web-Server
+Create Target Group
+
+Create a Internet facing load balancer
+
+Name = app-external-alb
+Scheme = internet
+VPC = 3-tier-vpc-project
+AZ = 1a = Public1
+AZ = 1b = Public2
+Security Group = WebALB-SG
+Protocol http = 80 = Select target group = Web-TG
+
+
+Go to Mumbai ACM and create Certificate
+Go to external elb --> listeners and rules --> add listener --> https and select ACM certificate
+
+If you want to Set up Auto-Scaling 
+----------------------------------
+
+Create App-Server-AMI image 
+
+Create a Launch template  
+Name = App-LT
+AMI = App-Server-AMI
+Instance Type = t3.micro
+Subnet = don't include
+Security Group = App-SG
+Instance Role = 3-tier-role
+
+Create Auto-Scaling Group
+
+Name = App-ASG
+Launch template = App-LT
+VPC = 3-tier-vpc-project
+AZ = APP1 and APP2
+attach existing load balancer = internal load balancer
+DC = 4, Min = 2, Max = 6
+AVG CPU = 70% 
+Create ASG
+
+------------------------------------
+
+Create Web-Server-ami image 
+
+Create a Launch template  
+Name = Web-LT
+AMI = Web-Server-AMI
+Instance Type = t2.micro
+Subnet = don't include
+Security Group = Web-SG
+Instance Role = 3-tier-role
+
+Create Auto-Scaling Group
+
+Name = Web-ASG
+Launch template = Web-LT
+VPC = 3-tier-vpc-project
+AZ = Public1 and Public2
+attach existing load balancer = External load balancer
+DC = 4, Min = 2, Max = 6
+AVG CPU = 70% 
+Create ASG
+
+
+Implement CloudFront
+
+
+
