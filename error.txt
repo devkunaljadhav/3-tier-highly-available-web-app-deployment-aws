@@ -1,0 +1,22 @@
+Navigate to the app-tier directory:
+
+/home/ec2-user/app-tier
+
+Update the MySQL client library:
+
+Uninstalled the old package (optional): npm uninstall mysql
+
+Installed the required package (mandatory): npm install mysql2
+
+
+Made a small change in the app-tier code:
+
+File: TransactionService.js
+
+Previous import:
+
+const mysql = require('mysql');
+
+Updated import:
+
+const mysql = require('mysql2');
