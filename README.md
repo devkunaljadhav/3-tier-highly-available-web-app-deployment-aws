@@ -270,7 +270,7 @@ The application decouples the presentation, logic, and data layers into isolated
 
 **Kunal Jadhav**
 
-* 🌐 **Portfolio**: [portfolio.kunalcloud.shop](https://portfolio.kunalcloud.shop)
+* 🌐 **Portfolio**: [portfolio.kunalcloud.shop](https://kunalcloud.shop)
 * 🐙 **GitHub**: [@devkunaljadhav](https://github.com/devkunaljadhav)
 * 💼 **LinkedIn**: [Kunal Jadhav](https://www.linkedin.com/in/devkunaljadhav)
 * 📧 **Email**: [kunaljadhav1625@gmail.com](mailto:kunaljadhav1625@gmail.com)
